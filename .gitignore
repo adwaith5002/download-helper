@@ -1,0 +1,16 @@
+# Compiled binary
+download-helper.exe
+download-helper
+*.exe
+
+# Go workspace file
+go.work
+go.work.sum
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/

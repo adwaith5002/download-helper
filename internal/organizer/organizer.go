@@ -1,8 +1,9 @@
 package organizer
 
 import (
-	"path/filepath"
 	"os"
+	"path/filepath"
+
 	"github.com/adwaith5002/download-helper/pkg/fileinfo"
 )
 
@@ -31,51 +32,50 @@ func isAlreadyOrganized(path string) bool {
 	}
 	return parent == "Duplicates"
 }
-
 func BuildPlan(files []fileinfo.FileInfo, dupes [][]fileinfo.FileInfo, root string) []Plan {
-	dupeSet := make(map[string]bool)
-	var plans []Plan
-	for _, group := range dupes {
-		for _, f := range group[1:] { // skip[0], it's the "original"
-			dupeSet[f.Path] = true
-		}
-	}
-	for _, f := range files {
-		// 1. Skip Unknown category
-		if f.Category == fileinfo.Unknown {
-			continue
-		}
-		// 2. Check if already in a subfolder (filepath.Dir and filepath.Base)
-		if isAlreadyOrganized(f.Path) {
-			continue
-		}
-		var folder string
-		// 3. Determine destination folder:
-		if dupeSet[f.Path] { // ✅ — true means it's a duplicate
-			folder = "Duplicates"
-		} else {
-			folder = categoryFolders[f.Category]
-		}
+    dupeSet := make(map[string]bool)
+    var plans []Plan
+    for _, group := range dupes {
+        for _, f := range group[1:] {
+            dupeSet[f.Path] = true
+        }
+    }
 
-		dest := filepath.Join(root, folder, f.Name)
-		plans = append(plans, Plan{
-			From:   f.Path,
-			To:     dest,
-			IsDupe: dupeSet[f.Path],
-		})
-	}
-	return plans
+    for _, f := range files {
+        if f.Category == fileinfo.Unknown {
+            continue
+        }
+        if isAlreadyOrganized(f.Path) {
+            continue
+        }
+        var folder string
+        if dupeSet[f.Path] {
+            folder = "Duplicates"
+        } else {
+            folder = categoryFolders[f.Category]
+        }
+        dest := filepath.Join(root, folder, f.Name)
+        plans = append(plans, Plan{
+            From:   f.Path,
+            To:     dest,
+            IsDupe: dupeSet[f.Path],
+        })
+    }
+    return plans
 }
 func Execute(plans []Plan) error {
-    for _, p := range plans {
+	for _, p := range plans {
+		if _, err := os.Stat(p.From); os.IsNotExist(err) {
+			continue // source no longer exists, skip it
+		}
 		err := os.MkdirAll(filepath.Dir(p.To), 0755)
-		if err!=nil{
+		if err != nil {
 			return err
 		}
 		err = os.Rename(p.From, p.To)
-		if err!=nil{
+		if err != nil {
 			return err
 		}
 	}
-    return nil
+	return nil
 }

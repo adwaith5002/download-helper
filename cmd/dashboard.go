@@ -5,6 +5,7 @@ import (
 	"github.com/adwaith5002/download-helper/internal/tui"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
+	"github.com/adwaith5002/download-helper/internal/analyzer"
 )
 
 var dashboardCmd = &cobra.Command{
@@ -21,11 +22,13 @@ var dashboardCmd = &cobra.Command{
 			return err
 		}
 
-		model := tui.NewModel(files)
-		p := tea.NewProgram(
-			model,
-			tea.WithAltScreen(),
-		)
+		duplicates, err := analyzer.FindDuplicates(files)
+		if err != nil {
+			return err
+		}
+
+		model := tui.NewModel(files, duplicates, path)
+		p := tea.NewProgram(model)
 		_, err = p.Run()
 		return err
 	},

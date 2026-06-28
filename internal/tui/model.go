@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 
@@ -9,8 +10,11 @@ import (
 	"github.com/adwaith5002/download-helper/internal/organizer"
 	"github.com/adwaith5002/download-helper/internal/scanner"
 	"github.com/adwaith5002/download-helper/pkg/fileinfo"
+	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+var progressBar = progress.New(progress.WithDefaultGradient())
 
 type Model struct {
 	files       []fileinfo.FileInfo
@@ -21,6 +25,9 @@ type Model struct {
 	dupes       [][]fileinfo.FileInfo
 	root        string
 	statusMsg   string
+	moveIndex   int
+	moving      bool
+	failCount   int
 }
 type Screen int
 
@@ -28,6 +35,11 @@ const (
 	ScreenBrowse Screen = iota
 	ScreenPlan
 )
+
+type fileMovedMsg struct {
+	index int
+	err   error
+}
 
 func NewModel(files []fileinfo.FileInfo, dupes [][]fileinfo.FileInfo, root string) Model {
 	return Model{
@@ -50,6 +62,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case ScreenPlan:
 			return m.updatePlan(msg)
 		}
+	case fileMovedMsg:
+		if msg.err != nil {
+			m.failCount++
+		}
+		m.moveIndex++
+		if m.moveIndex < len(m.plans) {
+			return m, moveFileCmd(m.plans[m.moveIndex], m.moveIndex)
+		}
+		m.moving = false
+		if m.failCount > 0 {
+			m.statusMsg = fmt.Sprintf("Moved %d files, %d failed", len(m.plans)-m.failCount, m.failCount)
+		} else {
+			m.statusMsg = fmt.Sprintf("Moved %d files successfully", len(m.plans))
+		}
+		m.screen = ScreenBrowse
 	}
 	return m, nil
 }
@@ -93,13 +120,13 @@ func (m Model) updateBrowse(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updatePlan(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y":
-		err := organizer.Execute(m.plans)
-		if err != nil {
-			m.statusMsg = fmt.Sprintf("Error: %v", err)
-		} else {
-			m.statusMsg = fmt.Sprintf("Moved %d files successfully", len(m.plans))
+		if len(m.plans) == 0 {
+			m.screen = ScreenBrowse
+			return m, nil
 		}
-		m.screen = ScreenBrowse
+		m.moving = true
+		m.moveIndex = 0
+		return m, moveFileCmd(m.plans[0], 0)
 	case "n", "esc":
 		m.screen = ScreenBrowse
 	case "up", "down", "j", "k":
@@ -120,8 +147,8 @@ func (m Model) View() string {
 }
 
 func (m Model) viewBrowse() string {
-	s := fmt.Sprintf("Download Helper — %d files | ↑/↓ navigate, o organize, q quit\n\n", len(m.files))
-
+	s := titleStyle.Render(fmt.Sprintf("Download Helper — %d files", len(m.files))) + "\n"
+	s += dimStyle.Render("↑/↓ navigate, o organize, q quit") + "\n\n"
 	windowSize := 20
 	windowEnd := m.windowStart + windowSize
 	if windowEnd > len(m.files) {
@@ -130,11 +157,17 @@ func (m Model) viewBrowse() string {
 
 	for i := m.windowStart; i < windowEnd; i++ {
 		f := m.files[i]
-		cursor := "  "
+		namePart := fmt.Sprintf("%-40s", f.Name)
+		catPart := fmt.Sprintf("%-12s", f.Category)
+		sizePart := fmt.Sprintf("%d bytes", f.Size)
+
 		if i == m.cursor {
-			cursor = "> "
+			line := namePart + "  " + catPart + "  " + sizePart
+			s += selectedStyle.Render("> "+line) + "\n"
+		} else {
+			styledCat := categoryColors[f.Category].Render(catPart)
+			s += "  " + namePart + "  " + styledCat + "  " + sizePart + "\n"
 		}
-		s += fmt.Sprintf("%s%-40s  %-12s  %d bytes\n", cursor, f.Name, f.Category, f.Size)
 	}
 
 	if m.statusMsg != "" {
@@ -144,6 +177,9 @@ func (m Model) viewBrowse() string {
 }
 
 func (m Model) viewPlan() string {
+	if m.moving {
+		return m.viewMoving()
+	}
 	groups := make(map[string][]organizer.Plan)
 	for _, p := range m.plans {
 		folder := filepath.Base(filepath.Dir(p.To))
@@ -156,15 +192,41 @@ func (m Model) viewPlan() string {
 	}
 	sort.Strings(folderNames)
 
-	s := fmt.Sprintf("Proposed moves (%d total):\n\n", len(m.plans))
+	s := titleStyle.Render(fmt.Sprintf("Proposed moves (%d total)", len(m.plans))) + "\n\n"
 	for _, folder := range folderNames {
 		plans := groups[folder]
-		s += fmt.Sprintf("%s (%d files)\n", folder, len(plans))
+		header := fmt.Sprintf("%s (%d files)", folder, len(plans))
+		if folder == "Duplicates" {
+			s += warningStyle.Render(header) + "\n"
+		} else {
+			s += titleStyle.Render(header) + "\n"
+		}
 		for _, p := range plans {
-			s += fmt.Sprintf("  %s\n", filepath.Base(p.To))
+			s += "  " + filepath.Base(p.To) + "\n"
 		}
 		s += "\n"
 	}
-	s += "y: confirm   n/esc: cancel"
+	s += dimStyle.Render("y: confirm   n/esc: cancel")
+	return s
+}
+
+func moveFileCmd(p organizer.Plan, index int) tea.Cmd {
+	return func() tea.Msg {
+		err := os.MkdirAll(filepath.Dir(p.To), 0755)
+		if err == nil {
+			err = os.Rename(p.From, p.To)
+		}
+		return fileMovedMsg{index: index, err: err}
+	}
+}
+
+func (m Model) viewMoving() string {
+	total := len(m.plans)
+	done := m.moveIndex
+	percent := float64(done) / float64(total)
+
+	s := titleStyle.Render("Moving files...") + "\n\n"
+	s += progressBar.ViewAs(percent) + "\n"
+	s += fmt.Sprintf("%d/%d files\n", done, total)
 	return s
 }
